@@ -1,0 +1,10 @@
+[project]
+name = "example-money-transfer-py"
+version = "0.1.0"
+description = "Saga pattern in Python — debit + credit with durable compensation on failure. SQLite ledger."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.13"
+dependencies = [
+    "resonate-sdk>=0.6.3",
+]
