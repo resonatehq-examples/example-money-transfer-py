@@ -15,7 +15,7 @@ Move funds between two accounts as a saga — debit, credit, and on a credit-sid
 ## What this example demonstrates
 
 - **Saga pattern.** A multi-step business operation written as straight-line Python, with compensation triggered when a step fails.
-- **Durable steps.** Each `ctx.run(...)` call is a checkpoint. If the worker crashes after the debit but before the credit, Resonate replays from the last successful checkpoint.
+- **Durable steps.** Each `await ctx.run(...)` call is a checkpoint. If the worker crashes after the debit but before the credit, Resonate replays from the last successful checkpoint.
 - **Idempotency.** Ledger entries are keyed by a deterministic operation id (`{transfer_id}-debit`, `{transfer_id}-credit`, `{transfer_id}-reversal`) and inserted with `INSERT OR IGNORE`. Replays apply the entry once and only once.
 - **Explicit compensation.** When the credit step raises, the workflow catches the exception and runs the reversal — also durable, also idempotent.
 
@@ -44,18 +44,23 @@ Each numbered box is a durable checkpoint. Steps 1 and 3 reuse the same `apply_e
 
 ## How to run
 
-This example uses [uv](https://docs.astral.sh/uv/) for the Python environment.
+This example requires a running Resonate server. Install the Resonate CLI and start the server:
 
-Install dependencies:
+```shell
+resonate dev
+```
+
+This starts the server on port 8001 by default. In a separate terminal, install dependencies and run the demo:
 
 ```shell
 uv sync
+uv run main.py
 ```
 
-Run the demo:
+The demo connects to `http://localhost:8001` by default. Override with the `RESONATE_URL` environment variable:
 
 ```shell
-uv run main.py
+RESONATE_URL=http://my-server:8001 uv run main.py
 ```
 
 You'll see two transfers: one happy path that commits, and one where the credit is configured to fail so the saga compensates. The closing balances show that `alice` is left correctly debited only by the committed transfer.
@@ -65,52 +70,32 @@ Sample output:
 ```text
 opening balances: alice=200.0 bob=0.0
 
-[saga] transfer transfer-001: alice -> bob  $50.0
-  [ledger] transfer-001-debit:  alice -50.0  // debit
-  [ledger] transfer-001-credit: bob +50.0    // credit
-[saga] transfer transfer-001 committed
+[saga] transfer transfer-1719000000000000000: alice -> bob  $50.0
+  [ledger] transfer-1719000000000000000-debit:  alice -50.0  // debit
+  [ledger] transfer-1719000000000000000-credit: bob +50.0    // credit
+[saga] transfer transfer-1719000000000000000 committed
 
-[saga] transfer transfer-002: alice -> bob  $75.0
-  [ledger] transfer-002-debit: alice -75.0   // debit
+[saga] transfer transfer-1719000000000001000: alice -> bob  $75.0
+  [ledger] transfer-1719000000000001000-debit: alice -75.0   // debit
 [saga] credit failed: target account 'bob' rejected the credit. Compensating...
-  [ledger] transfer-002-reversal: alice +75.0 // reversal
+  [ledger] transfer-1719000000000001000-reversal: alice +75.0 // reversal
 
 closing balances: alice=150.0 bob=50.0
+(the second transfer was compensated, so alice ends at 200 - 50 = 150)
 ```
-
-## Running against a Resonate Server
-
-The demo runs in **local mode** (`Resonate.local()`) — no server required, useful for iterating on the workflow itself.
-
-For a server-backed deployment that survives process restarts, swap the constructor:
-
-```python
-# Replace this:
-resonate = Resonate.local()
-# With this:
-resonate = Resonate()  # auto-detects RESONATE_HOST / RESONATE_URL
-```
-
-Then start the legacy Resonate server in a separate terminal:
-
-```shell
-resonate serve --aio-store-sqlite-path ./resonate.db
-```
-
-The Python SDK currently speaks the legacy server protocol, so use `resonate serve` rather than `resonate dev`.
 
 ## Files
 
 - [`main.py`](./main.py) — the saga workflow, the SQLite ledger helpers, and a small demo driver.
-- [`pyproject.toml`](./pyproject.toml) — pins `resonate-sdk>=0.6.3`.
+- [`pyproject.toml`](./pyproject.toml) — pins `resonate-sdk>=0.7.0`.
 
 ## How it works
 
 ### Idempotent ledger entries
 
 ```python
-def apply_entry(ctx, op_id, account, amount, note=""):
-    db = ctx.get_dependency("db")
+async def apply_entry(ctx, op_id, account, amount, note=""):
+    db = ctx.get_dependency(sqlite3.Connection)
     cursor = db.execute(
         "INSERT OR IGNORE INTO transfers (uuid, account, amount, note) "
         "VALUES (?, ?, ?, ?)",
@@ -124,26 +109,49 @@ The `uuid` column is the table's primary key. `INSERT OR IGNORE` makes a replay 
 ### The saga, written as straight-line code
 
 ```python
-def transfer_money(ctx, transfer_id, source, target, amount, *, simulate_credit_failure=False):
+async def transfer_money(ctx, source, target, amount, *, simulate_credit_failure=False):
+    transfer_id = ctx.promise_id
     debit_id    = f"{transfer_id}-debit"
     credit_id   = f"{transfer_id}-credit"
     reversal_id = f"{transfer_id}-reversal"
 
-    yield ctx.run(apply_entry, debit_id, source, -amount, "debit")
+    await ctx.run(apply_entry, debit_id, source, -amount, "debit")
 
     try:
-        yield ctx.run(
+        await ctx.options(retry_policy=Never()).run(
             credit_target, credit_id, target, amount,
             fail=simulate_credit_failure,
-        ).options(retry_policy=Never())
+        )
     except Exception as err:
-        yield ctx.run(apply_entry, reversal_id, source, amount, "reversal")
+        await ctx.run(apply_entry, reversal_id, source, amount, "reversal")
         return {"status": "compensated", "error": str(err)}
 
     return {"status": "committed", ...}
 ```
 
 `retry_policy=Never()` is intentional on the credit step: this saga's compensation IS the response to a credit-side failure. In production you'd typically allow a few retries first (network blips happen) and only compensate after the upstream has clearly rejected the credit.
+
+### Registering a dependency
+
+```python
+r = Resonate(url=url)
+r.with_dependency(db)          # register the sqlite3.Connection
+r.register(transfer_money)     # register the workflow function
+```
+
+Inside a step, retrieve the dependency by type:
+
+```python
+db = ctx.get_dependency(sqlite3.Connection)
+```
+
+### Running a workflow
+
+```python
+result = await r.run(unique_id, transfer_money, source, target, amount).result()
+```
+
+`r.run(...)` returns a handle immediately. `.result()` is an awaitable that resolves when the workflow completes.
 
 ### Account balances
 
