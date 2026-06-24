@@ -110,7 +110,7 @@ The `uuid` column is the table's primary key. `INSERT OR IGNORE` makes a replay 
 
 ```python
 async def transfer_money(ctx, source, target, amount, *, simulate_credit_failure=False):
-    transfer_id = ctx.promise_id
+    transfer_id = ctx.info.id
     debit_id    = f"{transfer_id}-debit"
     credit_id   = f"{transfer_id}-credit"
     reversal_id = f"{transfer_id}-reversal"

@@ -100,7 +100,6 @@ async def credit_target(
 
 async def transfer_money(
     ctx: Context,
-    transfer_id: str,
     source: str,
     target: str,
     amount: float,
@@ -118,6 +117,7 @@ async def transfer_money(
     step (2), Resonate replays the workflow, sees the source debit is
     already in the ledger (idempotent insert), and continues from there.
     """
+    transfer_id = ctx.info.id
     print(f"\n[saga] transfer {transfer_id}: {source} -> {target}  ${amount}")
 
     debit_id = f"{transfer_id}-debit"
@@ -193,7 +193,7 @@ async def main() -> None:
     try:
         # --- happy path ---------------------------------------------------------
         tid1 = f"transfer-{time.time_ns()}"
-        result1 = await r.run(tid1, transfer_money, tid1, "alice", "bob", 50.0).result()
+        result1 = await r.run(tid1, transfer_money, "alice", "bob", 50.0).result()
         print(f"result: {result1}")
 
         # --- failure path: credit rejected, saga compensates --------------------
@@ -201,7 +201,6 @@ async def main() -> None:
         result2 = await r.run(
             tid2,
             transfer_money,
-            tid2,
             "alice",
             "bob",
             75.0,
