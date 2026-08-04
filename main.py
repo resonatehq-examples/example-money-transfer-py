@@ -52,6 +52,7 @@ def setup_database(path: str = DB_PATH) -> sqlite3.Connection:
 # --- Ledger operations (async steps) ----------------------------------------
 
 
+# #region ledger
 async def apply_entry(
     ctx: Context,
     op_id: str,
@@ -64,7 +65,9 @@ async def apply_entry(
     The `INSERT OR IGNORE` clause means a replay of this step after a crash
     is a no-op — the row is already there, the balance is already correct.
     """
+    # #region dependency
     db = ctx.get_dependency(sqlite3.Connection)
+    # #endregion
     cursor = db.execute(
         "INSERT OR IGNORE INTO transfers (uuid, account, amount, note) VALUES (?, ?, ?, ?)",
         (op_id, account, amount, note),
@@ -75,6 +78,7 @@ async def apply_entry(
         sign = "+" if amount >= 0 else ""
         print(f"  [ledger] {op_id}: {account} {sign}{amount}  // {note}")
     return op_id
+# #endregion
 
 
 # --- The saga ---------------------------------------------------------------
@@ -98,6 +102,7 @@ async def credit_target(
     return await apply_entry(ctx, op_id, target, amount, note="credit")
 
 
+# #region workflow
 async def transfer_money(
     ctx: Context,
     source: str,
@@ -160,6 +165,7 @@ async def transfer_money(
         "target": target,
         "amount": amount,
     }
+# #endregion
 
 
 # --- Demo -------------------------------------------------------------------
@@ -178,9 +184,11 @@ async def main() -> None:
     db = setup_database()
 
     url = os.environ.get("RESONATE_URL", "http://localhost:8001")
+    # #region setup
     r = Resonate(url=url)
     r.with_dependency(db)
     r.register(transfer_money)
+    # #endregion
 
     # Seed the source account so it has something to send.
     db.execute(
@@ -192,8 +200,10 @@ async def main() -> None:
 
     try:
         # --- happy path ---------------------------------------------------------
+        # #region run
         tid1 = f"transfer-{time.time_ns()}"
         result1 = await r.run(tid1, transfer_money, "alice", "bob", 50.0).result()
+        # #endregion
         print(f"result: {result1}")
 
         # --- failure path: credit rejected, saga compensates --------------------
