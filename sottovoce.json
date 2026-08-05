@@ -1,0 +1,6 @@
+{
+  "docs": ["README.md"],
+  "sources": {
+    "self": { "path": "." }
+  }
+}
