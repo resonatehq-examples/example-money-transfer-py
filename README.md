@@ -127,7 +127,7 @@ async def apply_entry(
     return op_id
 ```
 
-The `uuid` column is the table's primary key. `INSERT OR IGNORE` makes a replay of the same step a no-op — the row is already there, the balance already reflects it.
+The `uuid` column is the table's primary key — that is what makes `op_id` the idempotency key.
 
 ### The saga, written as straight-line code
 
@@ -198,7 +198,7 @@ async def transfer_money(
     }
 ```
 
-`retry_policy=Never()` is intentional on the credit step: this saga's compensation IS the response to a credit-side failure. In production you'd typically allow a few retries first (network blips happen) and only compensate after the upstream has clearly rejected the credit.
+Note that the compensation is ordinary Python — a `try`/`except` around one step. There is no separate saga DSL, no compensation registry, and no orchestrator config. The durability comes from `ctx.run`; the business logic stays readable.
 
 ### Registering a dependency
 
@@ -212,7 +212,7 @@ r.with_dependency(db)
 r.register(transfer_money)
 ```
 
-Inside a step, retrieve the dependency by type:
+Any step can then retrieve it by type — this is the line `apply_entry` opens with, above:
 
 <!-- sotto self:main.py#dependency -->
 
